@@ -75,7 +75,7 @@ signal, specifically with an average of zero volts, in order to prevent
 bulk ion transport and deposition on the sensor probes.  Our circuit manages
 this by driving DRVn and DRVC opposite polarity half of the time.
 
-We could simply alternate the two, but that could lead to artifacts from nearby
+We could simply alternate the two, but that could lead to heterodyning with
 AC power signals.  Instead, we use a pseudo random sequence to determine the
 polarity of one sample to the next.  The only requirement of the PSR is that it
 display an average of zero.
@@ -84,38 +84,92 @@ display an average of zero.
 
 SYSTEM_MODE(MANUAL)
 
+#define ADCA A0
+#define ADCB A1
+
 #define DRVC B0
 #define DRV0 B1
 #define DRV1 B2
 #define DRV2 B3
 #define DRV3 B4
 
-#define ADCA A0
-#define ADCB A1
+#define N_RANGES 4
 
 #define LED D7
 int state;
 
-typedef enum {
-  SCALE0, SCALE1, SCALE2, SCALE3
-} drive_scale_t;
-
-void zenDrive(bool polarity, drive_scale_t scale) {
-  const int drive_pins[] = {DRV0, DRV1, DRV2, DRV3};
-  int pin = drive_pins[scale];
+// Set of of the N_RANGES drivers as outputs, the others tri-stated
+void zenSetDrive(int drive_pin) {
   // someday this will be a pair of instructions that manipulate PORTA directly
   pinMode(DRV0, INPUT);
   pinMode(DRV1, INPUT);
   pinMode(DRV2, INPUT);
   pinMode(DRV3, INPUT);
-  pinMode(pin, OUTPUT);
-  digitalWrite(pin, polarity);
-  digitalWrite(DRVC, !polarity);
+  pinMode(drive_pin, OUTPUT);
 }
 
-double zenRead(bool polarity) {
+// take a reading with the drive currently in effect and the
+// specified polarity.  Returns a value between 0.0 and 1.0
+// (but it can go slightly outside of that range).
+double zenRawRead(bool polarity, int drive_pin) {
+  digitalWrite(drive_pin, polarity);
+  digitalWrite(DRVC, !polarity);
   double diff = (analogRead(ADCA) - analogRead(ADCB)) / 4096.0;
   return polarity ? diff : -diff;
+}
+
+// take a pair of readings with opposite drive polarity,
+// return the average.
+double zenSample(bool polarity, int range) {
+  const int drive_pins[] = {DRV0, DRV1, DRV2, DRV3};
+  double a, b, c;
+  int drive_pin = drive_pins[range];
+  zenSetDrive(drive_pin);
+  a = zenRawRead(polarity, drive_pin);
+  b = zenRawRead(!polarity, drive_pin);
+  c = (a + b) / 2.0;
+  return c;
+}
+
+// Given samples acquired at each range, pick the range that will give us the
+// best accuracy, i.e. the sample closest to 0.5.
+int zenChooseBestRange(double samples[]) {
+  int best_range = -1;
+  double best_err = 2.0;
+  for (int range=0; range<N_RANGES; range++) {
+    double sample = samples[range];
+    double err = (sample >= 0.5) ? (sample - 0.5) : (0.5 - sample);
+    if (err < best_err) {
+      best_err = err;
+      best_range = range;
+    }
+  }
+  return best_range;
+}
+
+// Convert a raw ADC reading into ohms.
+// TODO: This would benefit from a calibration step.
+double zenSampleToOhms(double sample, int range) {
+  const double r_drives[] = { 200.0, 1100.0, 10100.0, 100100.0 };
+  return r_drives[range] * sample / (1.0 - sample);
+}
+
+// Activate each N_RANGES drive in turn, read samples.  Find the
+// best reading of the N_RANGES and output results for that range.
+void zenRead(bool polarity) {
+  double samples[N_RANGES];
+  for (int i=0; i<N_RANGES; i++) {
+    samples[i] = zenSample(polarity, i);
+  }
+  int range = zenChooseBestRange(samples);
+  int ohms = zenSampleToOhms(samples[range], range);
+  zenReport(ohms, range);
+}
+
+void zenReport(double ohms, int range) {
+  Serial.print(ohms);
+  Serial.print(", ");
+  Serial.println(range);
 }
 
 void setupDrive() {
@@ -135,16 +189,8 @@ void setup() {
 void loop() {
   digitalWrite(LED, state ? HIGH : LOW);
   state = !state;
-  for (int scale=0; scale<4; scale++) {
-    for (int polarity=0; polarity<2; polarity++) {
-      zenDrive(polarity, (drive_scale_t)scale);
-      Serial.print(zenRead(polarity) * 100.0);
-      if ((scale == 3) && (polarity == 1)) {
-        Serial.println();
-        delay(100);
-      } else {
-        Serial.print(", ");
-      }
-    }
+  for (int polarity=0; polarity<2; polarity++) {
+    zenRead(polarity);
+    delay(250);
   }
 }
