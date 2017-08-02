@@ -138,8 +138,13 @@ void loop() {
   for (int scale=0; scale<4; scale++) {
     for (int polarity=0; polarity<2; polarity++) {
       zenDrive(polarity, (drive_scale_t)scale);
-      Serial.print(zenRead(polarity));
-      Serial.print('\r'); // print in place
+      Serial.print(zenRead(polarity) * 100.0);
+      if ((scale == 3) && (polarity == 1)) {
+        Serial.println();
+        delay(100);
+      } else {
+        Serial.print(", ");
+      }
     }
   }
 }
