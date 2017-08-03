@@ -162,7 +162,7 @@ void zenRead(bool polarity) {
     samples[i] = zenSample(polarity, i);
   }
   int range = zenChooseBestRange(samples);
-  int ohms = zenSampleToOhms(samples[range], range);
+  double ohms = zenSampleToOhms(samples[range], range);
   zenReport(ohms, range);
 }
 
@@ -170,6 +170,21 @@ void zenReport(double ohms, int range) {
   Serial.print(ohms);
   Serial.print(", ");
   Serial.println(range);
+}
+
+void zenCalibrate(bool polarity) {
+  for (int i=0; i<N_RANGES; i++) {
+    double sample = zenSample(polarity, i);
+    double ohms = zenSampleToOhms(sample, i);
+    Serial.print(sample * 1000.0); // bc print() limits to two decimal places
+    Serial.print(", ");
+    Serial.print(ohms);
+    if (i == N_RANGES-1) {
+      Serial.println();
+    } else {
+      Serial.print(", ");
+    }
+  }
 }
 
 void setupDrive() {
@@ -190,7 +205,8 @@ void loop() {
   digitalWrite(LED, state ? HIGH : LOW);
   state = !state;
   for (int polarity=0; polarity<2; polarity++) {
-    zenRead(polarity);
+    // zenRead(polarity);
+    zenCalibrate(polarity);
     delay(250);
   }
 }
