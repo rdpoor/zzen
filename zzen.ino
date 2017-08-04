@@ -80,6 +80,54 @@ AC power signals.  Instead, we use a pseudo random sequence to determine the
 polarity of one sample to the next.  The only requirement of the PSR is that it
 display an average of zero.
 
+## On the selection of Rdrv[n]
+
+For a given Rdrv, the system can take accurate readings over two decades, with
+DUT ranging from Rdrv/10 to Rdv*10.  If we use four drive resistors, what's the
+best set of values?
+
+Propose:
+     31.6 ohms (to read from 3 ohms to 300 ohms) [15 + 15]
+     1.0K ohms (to read 100 ohms to 10K ohms) [1K]
+    31.6K ohms (to read from 3K ohms to 310K ohms) [33K]
+     1.0M ohms (to read from 100K ohms to 10M ohms) [1M]
+
+This gives good overlap in each range and provides a very wide range of values.
+
+## On ADC input impedance
+
+The maximum external input impedance allowed for errors below 1/4 LSB is given
+by:
+
+     Rin = ((k - 0.5) / (Fadc * Cadc * ln(2^(N+2)))) - Radc
+
+We also know that:
+
+     Radc = 1.5 (min)
+     N = 12 (bits)
+     k = # sampling periods = ADC_SMPR1 = ?
+     Fadc = ADC clock freq = 15MHz?
+     Cadc = internal sample and hold capacitor = 4pF
+
+Our best guess:
+
+    Rin = 1 / (15 * 10^6 * 6 * 10^-12 * 9.7) = 1150
+
+The documents also mention 1µA of leakage on the input.  Across 1M, that could
+be a one volt error.
+
+So, this all tells us that we'll want an opamp follower for any drive resistor
+greater than 1K.
+
+Replace R[ADCA] and R[ADCB] in the above schematic with a good dual rail-to-rail
+opamp.  The TI OPA344 looks like a good option, as does the LMV342 (though that
+is only SMT).
+
+milli -3
+micro -6
+nano  -9
+pico  -12
+
 */
 
 SYSTEM_MODE(MANUAL)
@@ -97,6 +145,21 @@ SYSTEM_MODE(MANUAL)
 
 #define LED D7
 int state;
+
+// drive_params_t encapsulates the calibration parameters for a drive circuit.
+// At present, the calibration parameters are derived from scipy curve fitting.
+typedef struct {
+  double vdrv;
+  double rdrv;
+} drive_params_t;
+
+// From 20170803b.ipynb
+drive_params_t g_drives[] = {
+  {1.00027687,  76.00513493},
+  {9.97222635e-01,   1.05333803e+03},
+  {1.00225376e+00,   3.39380768e+04},
+  {4.75945804e-01,   2.54828619e+04}
+};
 
 // Set of of the N_RANGES drivers as outputs, the others tri-stated
 void zenSetDrive(int drive_pin) {
@@ -126,7 +189,13 @@ double zenSample(bool polarity, int range) {
   int drive_pin = drive_pins[range];
   zenSetDrive(drive_pin);
   a = zenRawRead(polarity, drive_pin);
+  a = zenRawRead(polarity, drive_pin);
+  a = zenRawRead(polarity, drive_pin);
+  a = zenRawRead(polarity, drive_pin); // does repeating the read make a diff?
   b = zenRawRead(!polarity, drive_pin);
+  b = zenRawRead(!polarity, drive_pin);
+  b = zenRawRead(!polarity, drive_pin);
+  b = zenRawRead(!polarity, drive_pin); // ditto...
   c = (a + b) / 2.0;
   return c;
 }
@@ -148,10 +217,10 @@ int zenChooseBestRange(double samples[]) {
 }
 
 // Convert a raw ADC reading into ohms.
-// TODO: This would benefit from a calibration step.
-double zenSampleToOhms(double sample, int range) {
-  const double r_drives[] = { 200.0, 1100.0, 10100.0, 100100.0 };
-  return r_drives[range] * sample / (1.0 - sample);
+double zenSampleToOhms(double vadc, int range) {
+  double rdrv = g_drives[range].rdrv;
+  double vdrv = g_drives[range].vdrv;
+  return rdrv * vadc / (vdrv - vadc);
 }
 
 // Activate each N_RANGES drive in turn, read samples.  Find the
@@ -174,9 +243,9 @@ void zenReport(double ohms, int range) {
 
 void zenCalibrate(bool polarity) {
   for (int i=0; i<N_RANGES; i++) {
-    double sample = zenSample(polarity, i);
-    double ohms = zenSampleToOhms(sample, i);
-    Serial.print(sample * 1000.0); // bc print() limits to two decimal places
+    double vadc = zenSample(polarity, i);
+    double ohms = zenSampleToOhms(vadc, i);
+    Serial.print(vadc * 1000.0); // bc print() limits to two decimal places
     Serial.print(", ");
     Serial.print(ohms);
     if (i == N_RANGES-1) {
@@ -205,8 +274,8 @@ void loop() {
   digitalWrite(LED, state ? HIGH : LOW);
   state = !state;
   for (int polarity=0; polarity<2; polarity++) {
-    // zenRead(polarity);
-    zenCalibrate(polarity);
+    zenRead(polarity);
+    // zenCalibrate(polarity);
     delay(250);
   }
 }
